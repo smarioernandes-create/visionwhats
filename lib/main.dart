@@ -1,9 +1,44 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:translator/translator.dart';
 
-void main() => runApp(const VisionWhatsApp());
+const String supabaseUrl = 'https://vdeuqkakvwbdjmbwvaxj.supabase.co';
+const String supabaseKey = 'sb_publishable_MQuUMqoaQK8MuiqOu5as1Q_aUtagiY1';
+const String appDownloadUrl = 'https://github.com/smarioernandes-create/visionwhats/releases';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseKey);
+  runApp(const VisionWhatsApp());
+}
+
+String normalizePhone(String raw) {
+  final trimmed = raw.trim();
+  final hasPlus = trimmed.startsWith('+');
+  var d = trimmed.replaceAll(RegExp(r'\D'), '').replaceFirst(RegExp(r'^0+'), '');
+  if (!hasPlus && (d.length == 10 || d.length == 11)) {
+    d = '55$d';
+  }
+  return d;
+}
+
+String makeRoomId(String a, String b) {
+  final list = [a, b]..sort();
+  return '${list[0]}_${list[1]}';
+}
+
+String initialsOf(String name) {
+  final parts = name.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts.first[0].toUpperCase();
+  return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+}
 
 class VisionWhatsApp extends StatelessWidget {
   const VisionWhatsApp({super.key});
@@ -21,111 +56,255 @@ class VisionWhatsApp extends StatelessWidget {
           foregroundColor: Colors.white,
         ),
       ),
-      home: const HomeScreen(),
+      home: const BootScreen(),
     );
   }
 }
 
-class ChatMessage {
-  final String id, text, time;
-  final bool isMe;
-  String? translatedText, detectedLang;
-  bool isTranslating = false;
+class BootScreen extends StatefulWidget {
+  const BootScreen({super.key});
 
-  ChatMessage({
-    required this.id,
-    required this.text,
-    required this.isMe,
-    required this.time,
-  });
+  @override
+  State<BootScreen> createState() => _BootScreenState();
 }
 
-class ChatContact {
-  final String name, initials, status, lang;
-  final Color color;
-  final List<String> replies;
-  final List<ChatMessage> messages;
-  int unread;
+class _BootScreenState extends State<BootScreen> {
+  String? _myPhone;
+  String? _myName;
+  bool _loading = true;
 
-  ChatContact({
-    required this.name,
-    required this.initials,
-    required this.color,
-    required this.status,
-    required this.lang,
-    required this.replies,
-    required this.messages,
-    this.unread = 0,
-  });
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _myPhone = prefs.getString('vw_phone');
+      _myName = prefs.getString('vw_name');
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_myPhone == null || _myPhone!.isEmpty || _myName == null || _myName!.isEmpty) {
+      return RegisterScreen(onDone: (phone, name) {
+        setState(() {
+          _myPhone = phone;
+          _myName = name;
+        });
+      });
+    }
+    return HomeScreen(
+      myPhone: _myPhone!,
+      myName: _myName!,
+      onLogout: () async {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('vw_phone');
+        await prefs.remove('vw_name');
+        setState(() {
+          _myPhone = null;
+          _myName = null;
+        });
+      },
+    );
+  }
+}
+
+class RegisterScreen extends StatefulWidget {
+  final void Function(String phone, String name) onDone;
+  const RegisterScreen({super.key, required this.onDone});
+
+  @override
+  State<RegisterScreen> createState() => _RegisterScreenState();
+}
+
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _nameCtrl = TextEditingController();
+  final _phoneCtrl = TextEditingController();
+  bool _saving = false;
+
+  Future<void> _submit() async {
+    final name = _nameCtrl.text.trim();
+    final phone = normalizePhone(_phoneCtrl.text);
+    if (name.isEmpty || phone.length < 10) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Digite seu nome e um telefone válido com DDD!')),
+      );
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      await Supabase.instance.client.from('vw_users').upsert({
+        'phone': phone,
+        'name': name,
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('vw_phone', phone);
+      await prefs.setString('vw_name', name);
+      widget.onDone(phone, name);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao conectar: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFE8EEF5),
+      appBar: AppBar(title: const Text('Bem-vindo ao VisionWhats')),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(Icons.chat_bubble_rounded, size: 64, color: Color(0xFF1565C0)),
+            const SizedBox(height: 12),
+            const Text(
+              'Configure seu perfil para conversar com seus contatos',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 24),
+            TextField(
+              controller: _nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Seu Nome',
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _phoneCtrl,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'Seu Telefone com DDD (ex: 11999998888)',
+                hintText: 'Se for de outro país, comece com +',
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1565C0),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+              ),
+              onPressed: _saving ? null : _submit,
+              child: Text(_saving ? 'Salvando...' : 'Entrar no VisionWhats', style: const TextStyle(fontSize: 16)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String myPhone;
+  final String myName;
+  final VoidCallback onLogout;
+
+  const HomeScreen({super.key, required this.myPhone, required this.myName, required this.onLogout});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final _sb = Supabase.instance.client;
   int _tab = 0;
   bool _searching = false;
   String _query = '';
+  Map<String, String> _savedContacts = {};
+  Map<String, String> _onlineUsers = {};
 
-  final List<ChatContact> _contacts = [
-    ChatContact(
-      name: 'Maria Silva',
-      initials: 'MS',
-      color: const Color(0xFF1E88E5),
-      status: 'online',
-      lang: 'pt',
-      unread: 1,
-      replies: ['Que ótimo esse VisionWhats! A voz ficou bem clara.', 'Combinado!'],
-      messages: [ChatMessage(id: '1', text: 'Oi! Toque em Ouvir para testar a leitura por voz!', isMe: false, time: '09:15')],
-    ),
-    ChatContact(
-      name: 'John Carter (EUA)',
-      initials: 'JC',
-      color: const Color(0xFF0288D1),
-      status: 'online',
-      lang: 'en',
-      unread: 2,
-      replies: ['That sounds great! VisionWhats translates super fast.', 'See you tomorrow!'],
-      messages: [
-        ChatMessage(id: '1', text: 'Hello! Tap Translate to read this message in Portuguese.', isMe: false, time: '09:10'),
-        ChatMessage(id: '2', text: 'Then tap the speaker icon to hear it!', isMe: false, time: '09:11'),
-      ],
-    ),
-    ChatContact(
-      name: 'Carlos Mendoza (Espanha)',
-      initials: 'CM',
-      color: const Color(0xFF00897B),
-      status: 'visto hoje às 08:40',
-      lang: 'es',
-      unread: 1,
-      replies: ['¡Excelente! Podemos hablar sin barreras de idioma.', '¡Muchas gracias!'],
-      messages: [ChatMessage(id: '1', text: '¡Hola! ¿Cómo estás hoy? Qué buena aplicación.', isMe: false, time: '08:40')],
-    ),
-    ChatContact(
-      name: 'Sophie Laurent (França)',
-      initials: 'SL',
-      color: const Color(0xFF3949AB),
-      status: 'online',
-      lang: 'fr',
-      replies: ['Merci beaucoup ! Cette application est géniale.', 'À bientôt !'],
-      messages: [ChatMessage(id: '1', text: 'Bonjour ! Tu peux traduire ce message en portugais.', isMe: false, time: 'Ontem')],
-    ),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('vw_saved_contacts');
+    if (raw != null) {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      _savedContacts = decoded.map((k, v) => MapEntry(k, v.toString()));
+    }
+    try {
+      final rows = await _sb.from('vw_users').select();
+      final map = <String, String>{};
+      for (final r in rows) {
+        map[r['phone'].toString()] = r['name'].toString();
+      }
+      _onlineUsers = map;
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveContact(String phone, String name) async {
+    _savedContacts[phone] = name;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('vw_saved_contacts', jsonEncode(_savedContacts));
+    if (mounted) setState(() {});
+  }
+
+  void _openChat(String peerPhone, String peerName) async {
+    await _saveContact(peerPhone, peerName);
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(myPhone: widget.myPhone, peerPhone: peerPhone, peerName: peerName),
+      ),
+    );
+    _loadData();
+  }
+
+  Future<void> _openContactsPicker() async {
+    await _loadData();
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ContactsScreen(
+          myPhone: widget.myPhone,
+          onlineUsers: _onlineUsers,
+          onSelect: (phone, name) {
+            Navigator.pop(context);
+            _openChat(phone, name);
+          },
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final list = _contacts.where((c) => c.name.toLowerCase().contains(_query.toLowerCase())).toList();
     return Scaffold(
       appBar: AppBar(
         title: _searching
             ? TextField(
                 autofocus: true,
                 style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(hintText: 'Buscar...', hintStyle: TextStyle(color: Colors.white70), border: InputBorder.none),
+                decoration: const InputDecoration(hintText: 'Buscar conversa...', hintStyle: TextStyle(color: Colors.white70), border: InputBorder.none),
                 onChanged: (v) => setState(() => _query = v),
               )
             : const Text('VisionWhats', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
@@ -137,47 +316,140 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!_searching) _query = '';
             }),
           ),
+          IconButton(
+            tooltip: 'Atualizar',
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadData,
+          ),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'share') {
+                Clipboard.setData(const ClipboardData(text: appDownloadUrl));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Link de download do VisionWhats copiado! Mande para seus amigos.')),
+                );
+              } else if (v == 'logout') {
+                widget.onLogout();
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(enabled: false, child: Text('${widget.myName} (+${widget.myPhone})')),
+              const PopupMenuItem(value: 'share', child: Text('Copiar link para convidar amigos')),
+              const PopupMenuItem(value: 'logout', child: Text('Trocar meu número')),
+            ],
+          ),
         ],
       ),
       body: _tab == 0
-          ? ListView.separated(
-              itemCount: list.length,
-              separatorBuilder: (_, __) => const Divider(height: 1, indent: 76),
-              itemBuilder: (ctx, i) {
-                final c = list[i];
-                final last = c.messages.isNotEmpty ? c.messages.last : null;
-                return ListTile(
-                  leading: CircleAvatar(
-                    radius: 26,
-                    backgroundColor: c.color,
-                    child: Text(c.initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  ),
-                  title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text(last?.text ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(last?.time ?? '', style: TextStyle(fontSize: 12, color: c.unread > 0 ? const Color(0xFF1976D2) : Colors.black45)),
-                      if (c.unread > 0) ...[
-                        const SizedBox(height: 4),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                          decoration: BoxDecoration(color: const Color(0xFF1976D2), borderRadius: BorderRadius.circular(12)),
-                          child: Text('${c.unread}', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-                        ),
-                      ],
-                    ],
-                  ),
-                  onTap: () async {
-                    setState(() => c.unread = 0);
-                    await Navigator.push(context, MaterialPageRoute(builder: (_) => ChatScreen(contact: c)));
-                    setState(() {});
+          ? StreamBuilder<List<Map<String, dynamic>>>(
+              stream: _sb.from('vw_messages').stream(primaryKey: ['id']).order('created_at', ascending: false),
+              builder: (context, snap) {
+                final latestByPeer = <String, Map<String, dynamic>>{};
+                final rows = snap.data ?? [];
+                for (final m in rows) {
+                  final s = m['sender_phone'].toString();
+                  final r = m['receiver_phone'].toString();
+                  if (s != widget.myPhone && r != widget.myPhone) continue;
+                  final peer = s == widget.myPhone ? r : s;
+                  latestByPeer.putIfAbsent(peer, () => m);
+                }
+
+                final allPeers = <String>{..._savedContacts.keys, ...latestByPeer.keys}.toList();
+                allPeers.sort((a, b) {
+                  final ta = latestByPeer[a]?['created_at']?.toString() ?? '';
+                  final tb = latestByPeer[b]?['created_at']?.toString() ?? '';
+                  return tb.compareTo(ta);
+                });
+
+                final filtered = allPeers.where((phone) {
+                  final name = _savedContacts[phone] ?? _onlineUsers[phone] ?? '+$phone';
+                  return name.toLowerCase().contains(_query.toLowerCase()) || phone.contains(_query);
+                }).toList();
+
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.contacts, size: 64, color: Color(0xFF1976D2)),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Nenhuma conversa ainda!\nToque no botão azul abaixo para adicionar um contato ou puxar da sua agenda.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 15.5),
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            onPressed: _openContactsPicker,
+                            icon: const Icon(Icons.person_add),
+                            label: const Text('Adicionar Contato'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1, indent: 76),
+                  itemBuilder: (_, i) {
+                    final phone = filtered[i];
+                    final name = _savedContacts[phone] ?? _onlineUsers[phone] ?? '+$phone';
+                    final last = latestByPeer[phone];
+                    final dt = DateTime.tryParse(last?['created_at']?.toString() ?? '')?.toLocal();
+                    final timeStr = dt == null ? '' : '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+                    final isRegistered = _onlineUsers.containsKey(phone);
+
+                    return ListTile(
+                      leading: CircleAvatar(
+                        radius: 26,
+                        backgroundColor: isRegistered ? const Color(0xFF1976D2) : Colors.blueGrey,
+                        child: Text(initialsOf(name), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                      title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(
+                        last?['text']?.toString() ?? (isRegistered ? 'No VisionWhats — toque para conversar' : '+$phone'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: Text(timeStr, style: const TextStyle(fontSize: 12, color: Colors.black45)),
+                      onTap: () => _openChat(phone, name),
+                    );
                   },
                 );
               },
             )
-          : Center(child: Text(_tab == 1 ? 'Atualizações / Status em breve' : 'Histórico de Chamadas em breve')),
+          : Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_tab == 1 ? 'Atualizações / Status em breve' : 'Chamadas de Voz/Vídeo em breve', style: const TextStyle(fontSize: 16)),
+                    const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(const ClipboardData(text: appDownloadUrl));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Link do VisionWhats copiado!')),
+                        );
+                      },
+                      icon: const Icon(Icons.share),
+                      label: const Text('Copiar link do app para amigos'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: const Color(0xFF1976D2),
+        foregroundColor: Colors.white,
+        onPressed: _openContactsPicker,
+        child: const Icon(Icons.person_add),
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _tab,
         selectedItemColor: const Color(0xFF1565C0),
@@ -192,257 +464,88 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class ChatScreen extends StatefulWidget {
-  final ChatContact contact;
-  const ChatScreen({super.key, required this.contact});
+class ContactsScreen extends StatefulWidget {
+  final String myPhone;
+  final Map<String, String> onlineUsers;
+  final void Function(String phone, String name) onSelect;
+
+  const ContactsScreen({super.key, required this.myPhone, required this.onlineUsers, required this.onSelect});
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  State<ContactsScreen> createState() => _ContactsScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
-  final _ctrl = TextEditingController();
-  final _scroll = ScrollController();
-  final _tts = FlutterTts();
-  final _translator = GoogleTranslator();
+class _ContactsScreenState extends State<ContactsScreen> {
+  final _nameCtrl = TextEditingController();
+  final _phoneCtrl = TextEditingController();
+  final _searchCtrl = TextEditingController();
+  List<Map<String, String>> _phoneBook = [];
+  bool _loadingContacts = false;
+  String _filter = '';
 
-  bool _autoVoice = false;
-  bool _autoTranslate = false;
-  String? _speakingId;
-  int _replyIdx = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _tts.setSpeechRate(0.5);
-    _tts.setCompletionHandler(() {
-      if (mounted) setState(() => _speakingId = null);
-    });
+  Future<void> _importPhoneContacts() async {
+    setState(() => _loadingContacts = true);
+    try {
+      final granted = await FlutterContacts.requestPermission(readonly: true);
+      if (!granted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Permissão da agenda negada. Você pode digitar o número acima.')),
+          );
+        }
+        return;
+      }
+      final contacts = await FlutterContacts.getContacts(withProperties: true);
+      final seen = <String>{};
+      final list = <Map<String, String>>[];
+      for (final c in contacts) {
+        for (final p in c.phones) {
+          final norm = normalizePhone(p.number);
+          if (norm.length >= 10 && norm != widget.myPhone && seen.add(norm)) {
+            list.add({'name': c.displayName.isEmpty ? '+$norm' : c.displayName, 'phone': norm});
+          }
+        }
+      }
+      list.sort((a, b) {
+        final aOn = widget.onlineUsers.containsKey(a['phone']) ? 0 : 1;
+        final bOn = widget.onlineUsers.containsKey(b['phone']) ? 0 : 1;
+        if (aOn != bOn) return aOn.compareTo(bOn);
+        return a['name']!.toLowerCase().compareTo(b['name']!.toLowerCase());
+      });
+      if (mounted) setState(() => _phoneBook = list);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erro ao ler agenda: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _loadingContacts = false);
+    }
   }
 
-  @override
-  void dispose() {
-    _tts.stop();
-    _ctrl.dispose();
-    _scroll.dispose();
-    super.dispose();
-  }
-
-  String _now() {
-    final d = DateTime.now();
-    return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-  }
-
-  String _locale(String lang) {
-    if (lang == 'en') return 'en-US';
-    if (lang == 'es') return 'es-ES';
-    if (lang == 'fr') return 'fr-FR';
-    return 'pt-BR';
-  }
-
-  Future<void> _speak(ChatMessage m) async {
-    if (_speakingId == m.id) {
-      await _tts.stop();
-      setState(() => _speakingId = null);
+  void _addManual() {
+    final phone = normalizePhone(_phoneCtrl.text);
+    final name = _nameCtrl.text.trim().isEmpty ? '+$phone' : _nameCtrl.text.trim();
+    if (phone.length < 10) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Digite um número válido com DDD!')));
       return;
     }
-    await _tts.stop();
-    final hasTrans = m.translatedText != null && m.translatedText!.isNotEmpty;
-    setState(() => _speakingId = m.id);
-    try {
-      await _tts.setLanguage(hasTrans ? 'pt-BR' : _locale(widget.contact.lang));
-      await _tts.speak(hasTrans ? m.translatedText! : m.text);
-    } catch (_) {
-      if (mounted) setState(() => _speakingId = null);
-    }
-  }
-
-  Future<void> _translate(ChatMessage m) async {
-    if (m.translatedText != null) {
-      setState(() => m.translatedText = null);
-      return;
-    }
-    setState(() => m.isTranslating = true);
-    try {
-      final res = await _translator.translate(m.text, to: 'pt');
-      if (mounted) {
-        setState(() {
-          m.translatedText = res.text;
-          m.detectedLang = res.sourceLanguage.code;
-          m.isTranslating = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => m.isTranslating = false);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sem internet para traduzir.')));
-      }
-    }
-  }
-
-  void _send() {
-    final text = _ctrl.text.trim();
-    if (text.isEmpty) return;
-    setState(() {
-      widget.contact.messages.add(ChatMessage(id: '${DateTime.now().millisecondsSinceEpoch}', text: text, isMe: true, time: _now()));
-      _ctrl.clear();
-    });
-    _scrollDown();
-
-    Timer(const Duration(milliseconds: 1300), () async {
-      if (!mounted) return;
-      final r = widget.contact.replies[_replyIdx % widget.contact.replies.length];
-      _replyIdx++;
-      final incoming = ChatMessage(id: '${DateTime.now().millisecondsSinceEpoch}', text: r, isMe: false, time: _now());
-      setState(() => widget.contact.messages.add(incoming));
-      _scrollDown();
-      if (_autoTranslate && widget.contact.lang != 'pt') await _translate(incoming);
-      if (_autoVoice) await _speak(incoming);
-    });
-  }
-
-  void _scrollDown() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
-      }
-    });
+    widget.onSelect(phone, name);
   }
 
   @override
   Widget build(BuildContext context) {
+    final visible = _phoneBook.where((c) {
+      return c['name']!.toLowerCase().contains(_filter.toLowerCase()) || c['phone']!.contains(_filter);
+    }).toList();
+
     return Scaffold(
-      backgroundColor: const Color(0xFFE8EEF5),
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: Row(
-          children: [
-            CircleAvatar(radius: 18, backgroundColor: widget.contact.color, child: Text(widget.contact.initials, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold))),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(widget.contact.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
-                  Text(widget.contact.status, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(_autoVoice ? Icons.record_voice_over : Icons.voice_over_off),
-            onPressed: () => setState(() => _autoVoice = !_autoVoice),
-          ),
-          IconButton(
-            icon: Icon(Icons.translate, color: _autoTranslate ? const Color(0xFF90CAF9) : Colors.white),
-            onPressed: () => setState(() => _autoTranslate = !_autoTranslate),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Contatos')),
       body: Column(
         children: [
           Container(
-            width: double.infinity,
-            color: const Color(0xFFD6E4F7),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Text(
-              'Voz automática: ${_autoVoice ? "ON" : "OFF"}   •   Traduzir automático: ${_autoTranslate ? "ON" : "OFF"}',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF0D47A1), fontWeight: FontWeight.w600),
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              controller: _scroll,
-              padding: const EdgeInsets.all(10),
-              itemCount: widget.contact.messages.length,
-              itemBuilder: (_, i) {
-                final m = widget.contact.messages[i];
-                final me = m.isMe;
-                final speaking = _speakingId == m.id;
-                return Align(
-                  alignment: me ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 4),
-                    padding: const EdgeInsets.fromLTRB(12, 9, 12, 7),
-                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-                    decoration: BoxDecoration(
-                      color: me ? const Color(0xFF1976D2) : Colors.white,
-                      borderRadius: BorderRadius.only(
-                        topLeft: const Radius.circular(14),
-                        topRight: const Radius.circular(14),
-                        bottomLeft: Radius.circular(me ? 14 : 2),
-                        bottomRight: Radius.circular(me ? 2 : 14),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(m.text, style: TextStyle(color: me ? Colors.white : const Color(0xFF1F2937), fontSize: 15.5)),
-                        if (m.isTranslating) const Padding(padding: EdgeInsets.only(top: 4), child: Text('Traduzindo...', style: TextStyle(fontSize: 12, color: Color(0xFF1565C0)))),
-                        if (m.translatedText != null)
-                          Container(
-                            margin: const EdgeInsets.only(top: 6),
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(color: const Color(0xFFE3F2FD), borderRadius: BorderRadius.circular(8)),
-                            child: Text('(${m.detectedLang ?? "auto"} → pt): ${m.translatedText!}', style: const TextStyle(fontSize: 14, color: Color(0xFF0D47A1))),
-                          ),
-                        const SizedBox(height: 5),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (!me) ...[
-                              InkWell(
-                                onTap: () => _speak(m),
-                                child: Row(children: [
-                                  Icon(speaking ? Icons.stop_circle : Icons.volume_up, size: 17, color: speaking ? Colors.red : const Color(0xFF1565C0)),
-                                  const SizedBox(width: 3),
-                                  Text(speaking ? 'Parar' : 'Ouvir', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: speaking ? Colors.red : const Color(0xFF1565C0))),
-                                ]),
-                              ),
-                              const SizedBox(width: 10),
-                              InkWell(
-                                onTap: () => _translate(m),
-                                child: Row(children: [
-                                  const Icon(Icons.translate, size: 15, color: Color(0xFF1565C0)),
-                                  const SizedBox(width: 3),
-                                  Text(m.translatedText == null ? 'Traduzir' : 'Original', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF1565C0))),
-                                ]),
-                              ),
-                              const SizedBox(width: 10),
-                            ],
-                            Text(m.time, style: TextStyle(fontSize: 11, color: me ? Colors.white70 : Colors.black45)),
-                            if (me) ...[const SizedBox(width: 4), const Icon(Icons.done_all, size: 15, color: Color(0xFFB3E5FC))],
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(25)),
-                      child: TextField(controller: _ctrl, onSubmitted: (_) => _send(), decoration: const InputDecoration(hintText: 'Mensagem', border: InputBorder.none)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  CircleAvatar(radius: 24, backgroundColor: const Color(0xFF1565C0), child: IconButton(icon: const Icon(Icons.send, color: Colors.white), onPressed: _send)),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
+            color: const Color(0xFFE8EEF5),
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('Adicionar por
