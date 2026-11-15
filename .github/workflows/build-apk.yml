@@ -34,8 +34,8 @@ jobs:
           flutter create . --project-name visionwhats --org com.visionwhats.app
           cp /tmp/vision_main.dart lib/main.dart
           rm -f test/widget_test.dart
-          flutter pub add flutter_tts translator
-          python3 -c 'import re; p="android/app/src/main/AndroidManifest.xml"; t=open(p).read(); t=re.sub(r"android:label=\"[^\"]*\"","android:label=\"VisionWhats\"",t,1); t=t.replace("<application","<uses-permission android:name=\"android.permission.INTERNET\"/>"+chr(10)+"<application",1) if "INTERNET" not in t else t; t=t.replace("</manifest>","<queries><intent><action android:name=\"android.intent.action.TTS_SERVICE\"/></intent></queries>"+chr(10)+"</manifest>",1) if "TTS_SERVICE" not in t else t; open(p,"w").write(t)'
+          flutter pub add "supabase_flutter:^2.18.3" "flutter_contacts:^1.1.9+2" shared_preferences flutter_tts translator
+          python3 -c 'import re; p="android/app/src/main/AndroidManifest.xml"; t=open(p).read(); t=re.sub(r"android:label=\"[^\"]*\"","android:label=\"VisionWhats\"",t,1); perms=""; perms+="<uses-permission android:name=\"android.permission.INTERNET\"/>"+chr(10) if "INTERNET" not in t else ""; perms+="<uses-permission android:name=\"android.permission.READ_CONTACTS\"/>"+chr(10) if "READ_CONTACTS" not in t else ""; t=t.replace("<application",perms+"<application",1); t=t.replace("</manifest>","<queries><intent><action android:name=\"android.intent.action.TTS_SERVICE\"/></intent></queries>"+chr(10)+"</manifest>",1) if "TTS_SERVICE" not in t else t; open(p,"w").write(t)'
           flutter build apk --release
 
       - name: Publicar APK direto na pagina Releases
@@ -43,5 +43,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cp build/app/outputs/flutter-apk/app-release.apk VisionWhats.apk
-          gh release delete v1.0 --cleanup-tag --yes || true
-          gh release create v1.0 VisionWhats.apk --title "VisionWhats v1.0" --notes "Toque em VisionWhats.apk abaixo para baixar e instalar!"
+          gh release delete v2.0 --cleanup-tag --yes || true
+          gh release create v2.0 VisionWhats.apk --title "VisionWhats v2.0 (Contatos + Chat Real)" --notes "Toque em VisionWhats.apk abaixo para baixar e instalar!"
