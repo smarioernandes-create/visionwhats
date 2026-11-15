@@ -1,0 +1,42 @@
+name: Build VisionWhats APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.41.9'
+          cache: true
+
+      - name: Criar projeto e gerar APK
+        run: |
+          cp lib/main.dart /tmp/vision_main.dart
+          flutter create . --project-name visionwhats --org com.visionwhats.app
+          cp /tmp/vision_main.dart lib/main.dart
+          rm -f test/widget_test.dart
+          flutter pub add flutter_tts translator
+          python3 -c 'import re; p="android/app/src/main/AndroidManifest.xml"; t=open(p).read(); t=re.sub(r"android:label=\"[^\"]*\"","android:label=\"VisionWhats\"",t,1); t=t.replace("<application","<uses-permission android:name=\"android.permission.INTERNET\"/>"+chr(10)+"<application",1) if "INTERNET" not in t else t; t=t.replace("</manifest>","<queries><intent><action android:name=\"android.intent.action.TTS_SERVICE\"/></intent></queries>"+chr(10)+"</manifest>",1) if "TTS_SERVICE" not in t else t; open(p,"w").write(t)'
+          flutter build apk --release
+
+      - name: Disponibilizar APK para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisionWhats-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
