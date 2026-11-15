@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,8 +38,10 @@ jobs:
           python3 -c 'import re; p="android/app/src/main/AndroidManifest.xml"; t=open(p).read(); t=re.sub(r"android:label=\"[^\"]*\"","android:label=\"VisionWhats\"",t,1); t=t.replace("<application","<uses-permission android:name=\"android.permission.INTERNET\"/>"+chr(10)+"<application",1) if "INTERNET" not in t else t; t=t.replace("</manifest>","<queries><intent><action android:name=\"android.intent.action.TTS_SERVICE\"/></intent></queries>"+chr(10)+"</manifest>",1) if "TTS_SERVICE" not in t else t; open(p,"w").write(t)'
           flutter build apk --release
 
-      - name: Disponibilizar APK para download
-        uses: actions/upload-artifact@v4
-        with:
-          name: VisionWhats-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+      - name: Publicar APK direto na pagina Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk VisionWhats.apk
+          gh release delete v1.0 --cleanup-tag --yes || true
+          gh release create v1.0 VisionWhats.apk --title "VisionWhats v1.0" --notes "Toque em VisionWhats.apk abaixo para baixar e instalar!"
