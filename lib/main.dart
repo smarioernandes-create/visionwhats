@@ -399,3 +399,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 Expanded(child: Container(padding: const EdgeInsets.symmetric(horizontal: 14), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(25)), child: TextField(controller: _ctrl, onSubmitted: (_) => _send(), decoration: const InputDecoration(hintText: 'Mensagem', border: InputBorder.none)))),
                 const SizedBox(width: 8),
                 CircleAvatar(radius: 24, backgroundColor: cPri, child: IconButton(icon: const Icon(Icons.send, 
+color: Colors.white), onPressed: _send)),
+              ]),
+            ),
+          ),
+        ]),
+      );
+}
